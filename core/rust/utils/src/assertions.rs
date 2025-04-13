@@ -1,10 +1,9 @@
-use solana_program::{
-    account_info::AccountInfo,
+use arch_program::{
+    account::AccountInfo,
     entrypoint::ProgramResult,
     program_error::ProgramError,
     program_pack::{IsInitialized, Pack},
     pubkey::Pubkey,
-    rent::Rent,
 };
 
 use crate::cmp_pubkeys;
@@ -77,16 +76,4 @@ pub fn assert_derivation_with_bump(
         return Err(error.into());
     }
     Ok(())
-}
-
-pub fn assert_rent_exempt(
-    rent: &Rent,
-    account_info: &AccountInfo,
-    error: impl Into<ProgramError>,
-) -> ProgramResult {
-    if !rent.is_exempt(account_info.lamports(), account_info.data_len()) {
-        Err(error.into())
-    } else {
-        Ok(())
-    }
 }

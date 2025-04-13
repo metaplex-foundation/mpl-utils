@@ -19,6 +19,7 @@ solana-program = ">= 1.14.13, <= 1.18"
 spl-token-2022 = { version = ">= 0.6.0, < 0.9", features = [
   "no-entrypoint",
 ], optional = true }
+arch_program = "0.4.0"
 
 [features]
 default = ["spl-token"]

@@ -1,17 +1,17 @@
-use solana_program::{
-    account_info::AccountInfo,
+use arch_program::{
+    account::AccountInfo,
+    bitcoin::{self, consensus, ScriptBuf, Transaction, TxOut},
     entrypoint::ProgramResult,
+    helper::{add_state_transition, get_state_transition_tx},
     msg,
+    program::{get_account_script_pubkey, get_bitcoin_tx},
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     pubkey::Pubkey,
-    rent::Rent,
-    system_instruction, system_program,
-    sysvar::Sysvar,
+    system_instruction,
 };
 
-/// Create account almost from scratch, lifted from
-/// <https://github.com/solana-labs/solana-program-library/tree/master/associated-token-account/program/src/processor.rs#L51-L98>
+/// Create account for Arch Network, adapted from Solana's approach
 pub fn create_or_allocate_account_raw<'a>(
     program_id: Pubkey,
     new_account_info: &AccountInfo<'a>,
@@ -20,108 +20,131 @@ pub fn create_or_allocate_account_raw<'a>(
     size: usize,
     signer_seeds: &[&[u8]],
 ) -> ProgramResult {
-    let rent = &Rent::get()?;
-    let required_lamports = rent
-        .minimum_balance(size)
-        .max(1)
-        .saturating_sub(new_account_info.lamports());
+    // Get the current transaction
+    let mut tx = get_state_transition_tx(&[
+        payer_info.clone(),
+        new_account_info.clone(),
+        system_program_info.clone(),
+    ]);
 
-    if required_lamports > 0 {
-        msg!("Transfer {} lamports to the new account", required_lamports);
-        invoke(
-            &system_instruction::transfer(payer_info.key, new_account_info.key, required_lamports),
-            &[
-                payer_info.clone(),
-                new_account_info.clone(),
-                system_program_info.clone(),
-            ],
-        )?;
-    }
+    msg!("Creating a new account of size {}", size);
 
-    let accounts = &[new_account_info.clone(), system_program_info.clone()];
-
-    msg!("Allocate space for the account");
+    // Create the account using system instruction
     invoke_signed(
-        &system_instruction::allocate(new_account_info.key, size.try_into().unwrap()),
-        accounts,
+        &system_instruction::create_account(
+            new_account_info.utxo.txid().try_into().unwrap(),
+            new_account_info.utxo.vout(),
+            *new_account_info.key,
+        ),
+        &[new_account_info.clone()],
         &[signer_seeds],
     )?;
 
-    msg!("Assign the account to the owning program");
-    invoke_signed(
-        &system_instruction::assign(new_account_info.key, &program_id),
-        accounts,
-        &[signer_seeds],
-    )?;
+    // Initialize data with zeros using realloc
+    new_account_info.realloc(size, false)?;
+
+    // Update the transaction with state transition for the new account
+    add_state_transition(&mut tx, new_account_info);
+
+    // Add appropriate UTXO output
+    let script_pubkey_bytes = get_account_script_pubkey(new_account_info.key);
+
+    // Get the UTXO information
+    let utxo_tx: Transaction = consensus::deserialize(
+        &get_bitcoin_tx(new_account_info.utxo.txid().try_into().unwrap()).unwrap(),
+    )
+    .unwrap();
+
+    // Add the UTXO value to our output
+    tx.output.push(TxOut {
+        value: utxo_tx.output[new_account_info.utxo.vout() as usize].value,
+        script_pubkey: ScriptBuf::from_bytes(script_pubkey_bytes.to_vec()),
+    });
 
     Ok(())
 }
 
-/// Resize an account using realloc, lifted from Solana Cookbook
+/// Resize an account in Arch Network
 pub fn resize_or_reallocate_account_raw<'a>(
     target_account: &AccountInfo<'a>,
     funding_account: &AccountInfo<'a>,
     system_program: &AccountInfo<'a>,
     new_size: usize,
 ) -> ProgramResult {
-    let rent = Rent::get()?;
-    let new_minimum_balance = rent.minimum_balance(new_size);
-    let lamports_diff = new_minimum_balance.abs_diff(target_account.lamports());
-    if new_size == target_account.data_len() {
+    // Get current size without using borrow which requires error conversion
+    let current_size = target_account
+        .data
+        .try_borrow()
+        .map_err(|_| ProgramError::Custom(1))?
+        .len();
+
+    if new_size == current_size {
         return Ok(());
     }
 
-    let account_infos = &[
+    msg!("Resizing account to {}", new_size);
+
+    // In Arch Network, we need to create a transaction to resize
+    let mut tx = get_state_transition_tx(&[
         funding_account.clone(),
         target_account.clone(),
         system_program.clone(),
-    ];
+    ]);
 
-    if new_size > target_account.data_len() {
-        invoke(
-            &system_instruction::transfer(funding_account.key, target_account.key, lamports_diff),
-            account_infos,
-        )?;
-    } else if target_account.owner == system_program.key {
-        invoke(
-            &system_instruction::transfer(target_account.key, funding_account.key, lamports_diff),
-            account_infos,
-        )?;
-    } else {
-        let target_account_lamports = target_account.lamports();
-        (**target_account.try_borrow_mut_lamports()?) = target_account_lamports
-            .checked_sub(lamports_diff)
-            .ok_or(ProgramError::InvalidRealloc)?;
+    // Resize the target account's data
+    target_account.realloc(new_size, false)?;
 
-        let funding_account_lamports = funding_account.lamports();
-        (**funding_account.try_borrow_mut_lamports()?) = funding_account_lamports
-            .checked_add(lamports_diff)
-            .ok_or(ProgramError::InvalidRealloc)?;
-    }
+    // Update the transaction with state transition
+    add_state_transition(&mut tx, target_account);
 
-    target_account.realloc(new_size, false)
+    // Handle the UTXO output for the resized account
+    let script_pubkey_bytes = get_account_script_pubkey(target_account.key);
+
+    // Get the UTXO information
+    let utxo_tx: Transaction = consensus::deserialize(
+        &get_bitcoin_tx(target_account.utxo.txid().try_into().unwrap()).unwrap(),
+    )
+    .unwrap();
+
+    // Add the UTXO value to our output
+    tx.output.push(TxOut {
+        value: utxo_tx.output[target_account.utxo.vout() as usize].value,
+        script_pubkey: ScriptBuf::from_bytes(script_pubkey_bytes.to_vec()),
+    });
+
+    Ok(())
 }
 
-/// Close src_account and transfer lamports to dst_account, lifted from Solana Cookbook
+/// Close an account in Arch Network
 pub fn close_account_raw<'a>(
     dest_account_info: &AccountInfo<'a>,
     src_account_info: &AccountInfo<'a>,
 ) -> ProgramResult {
-    let dest_starting_lamports = dest_account_info.lamports();
-    let mut dest_lamports_mut = dest_account_info
-        .lamports
-        .try_borrow_mut()
-        .map_err(|_| ProgramError::AccountBorrowFailed)?;
-    **dest_lamports_mut = dest_starting_lamports
-        .checked_add(src_account_info.lamports())
-        .ok_or(ProgramError::InvalidRealloc)?;
+    msg!("Closing account");
 
-    let mut src_lamports_mut = src_account_info
-        .lamports
-        .try_borrow_mut()
-        .map_err(|_| ProgramError::AccountBorrowFailed)?;
-    **src_lamports_mut = 0;
+    // Create a transaction that transfers the value from src to dest
+    let mut tx = get_state_transition_tx(&[dest_account_info.clone(), src_account_info.clone()]);
 
-    src_account_info.assign(&system_program::ID);
-    src_account_info.realloc(0, false).map_err(Into::into)
+    // Reset the source account by reallocating to zero size
+    src_account_info.realloc(0, false)?;
+
+    // Update the transaction with state transition
+    add_state_transition(&mut tx, src_account_info);
+
+    // Transfer the UTXO value to the destination account
+    let dest_script_pubkey = get_account_script_pubkey(dest_account_info.key);
+
+    // Get the UTXO information from source account
+    let utxo_tx: Transaction = consensus::deserialize(
+        &get_bitcoin_tx(src_account_info.utxo.txid().try_into().unwrap()).unwrap(),
+    )
+    .unwrap();
+
+    // Add an output to transfer the value to the destination account
+    tx.output.push(TxOut {
+        value: utxo_tx.output[src_account_info.utxo.vout() as usize].value,
+        script_pubkey: ScriptBuf::from_bytes(dest_script_pubkey.to_vec()),
+    });
+
+    Ok(())
 }

@@ -1,13 +1,13 @@
-use arrayref::{array_ref, array_refs};
-use solana_program::{
-    account_info::AccountInfo, program_error::ProgramError, program_option::COption, pubkey::Pubkey,
+use arch_program::{
+    account::AccountInfo, program_error::ProgramError, program_option::COption, pubkey::Pubkey,
 };
+use arrayref::{array_ref, array_refs};
 use spl_token_2022::extension::{BaseState, StateWithExtensions};
 
 pub fn unpack<S: BaseState>(
     account_data: &[u8],
 ) -> Result<StateWithExtensions<'_, S>, ProgramError> {
-    StateWithExtensions::<S>::unpack(account_data)
+    StateWithExtensions::<S>::unpack(account_data).map_err(|_| ProgramError::InvalidAccountData)
 }
 
 pub fn unpack_initialized<S: BaseState>(
@@ -28,7 +28,7 @@ fn unpack_coption_key(src: &[u8; 36]) -> Result<COption<Pubkey>, ProgramError> {
     let (tag, body) = array_refs![src, 4, 32];
     match *tag {
         [0, 0, 0, 0] => Ok(COption::None),
-        [1, 0, 0, 0] => Ok(COption::Some(Pubkey::new_from_array(*body))),
+        [1, 0, 0, 0] => Ok(COption::Some(Pubkey::from_slice(body))),
         _ => Err(ProgramError::InvalidAccountData),
     }
 }
@@ -40,7 +40,7 @@ pub fn get_owner_from_token_account(
     // TokenAccount layout:   mint(32), owner(32), ...
     let data = token_account_info.try_borrow_data()?;
     let owner_data = array_ref![data, 32, 32];
-    Ok(Pubkey::new_from_array(*owner_data))
+    Ok(Pubkey::from_slice(owner_data))
 }
 
 pub fn get_mint_authority(account_info: &AccountInfo) -> Result<COption<Pubkey>, ProgramError> {
