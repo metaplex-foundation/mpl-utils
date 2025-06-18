@@ -1,16 +1,17 @@
 use arrayref::{array_ref, array_refs};
+use solana_program::program_pack::Pack;
 use solana_program::{
     account_info::AccountInfo, program_error::ProgramError, program_option::COption, pubkey::Pubkey,
 };
 use spl_token_2022::extension::{BaseState, StateWithExtensions};
 
-pub fn unpack<S: BaseState>(
+pub fn unpack<S: BaseState + Pack>(
     account_data: &[u8],
 ) -> Result<StateWithExtensions<'_, S>, ProgramError> {
     StateWithExtensions::<S>::unpack(account_data)
 }
 
-pub fn unpack_initialized<S: BaseState>(
+pub fn unpack_initialized<S: BaseState + Pack>(
     account_data: &[u8],
     error: impl Into<ProgramError>,
 ) -> Result<StateWithExtensions<'_, S>, ProgramError> {
