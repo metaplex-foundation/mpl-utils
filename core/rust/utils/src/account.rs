@@ -6,9 +6,9 @@ use solana_program::{
     program_error::ProgramError,
     pubkey::Pubkey,
     rent::Rent,
-    system_instruction, system_program,
     sysvar::Sysvar,
 };
+use solana_system_interface::{instruction as system_instruction, program as system_program};
 
 /// Create account almost from scratch, lifted from
 /// <https://github.com/solana-labs/solana-program-library/tree/master/associated-token-account/program/src/processor.rs#L51-L98>
@@ -99,7 +99,7 @@ pub fn resize_or_reallocate_account_raw<'a>(
             .ok_or(ProgramError::InvalidRealloc)?;
     }
 
-    target_account.realloc(new_size, false)
+    target_account.resize(new_size)
 }
 
 /// Close src_account and transfer lamports to dst_account, lifted from Solana Cookbook
@@ -123,5 +123,5 @@ pub fn close_account_raw<'a>(
     **src_lamports_mut = 0;
 
     src_account_info.assign(&system_program::ID);
-    src_account_info.realloc(0, false).map_err(Into::into)
+    src_account_info.resize(0).map_err(Into::into)
 }
